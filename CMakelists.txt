@@ -1,0 +1,52 @@
+# We recommend bumping the minimum version to 3.18 for better modern CUDA support
+cmake_minimum_required(VERSION 3.18)
+
+# 1. Enable BOTH CXX (C++) and CUDA languages
+project(RealSenseDemo LANGUAGES CXX CUDA)
+
+# Set C++ and CUDA standards
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_ARCHITECTURES "native")
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# RealSense paths (from your original file)
+set(REALSENSE_INCLUDE_DIR "C:/Program Files (x86)/Intel RealSense SDK 2.0/include")
+set(REALSENSE_LIBRARY_DIR "C:/Program Files (x86)/Intel RealSense SDK 2.0/lib/x64")
+
+# OpenCV (from your original file)
+set(OpenCV_DIR "D:/GIT_LIBRARY/Opencv/opencv/build")
+find_package(OpenCV REQUIRED)
+
+# 2. Add all your source files here
+# Adjust the folder paths (src/) if your files are in the same root folder
+add_executable(main
+    src/main.cpp
+    include/Utils.cpp
+    include/calculation.cu
+)
+
+# 3. Include directories for your headers (.hpp and .cuh)
+target_include_directories(main PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+    "${REALSENSE_INCLUDE_DIR}"
+    ${OpenCV_INCLUDE_DIRS}
+)
+# Tell the CUDA compiler to allow standard C++ constexpr functions (like std::array)
+target_compile_options(main PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+
+# Link your libraries
+target_link_libraries(main PRIVATE
+    "${REALSENSE_LIBRARY_DIR}/realsense2.lib"
+    ${OpenCV_LIBS}
+)
+
+# Copy the RealSense DLL to the build folder so the executable can find it [cite: 1, 2]
+if(WIN32)
+    add_custom_command(TARGET main POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "C:/Program Files (x86)/Intel RealSense SDK 2.0/bin/x64/realsense2.dll"
+        $<TARGET_FILE_DIR:main>
+    )
+endif()
