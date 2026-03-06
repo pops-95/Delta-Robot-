@@ -173,13 +173,17 @@ static void onMouse(int event, int x, int y, int flags, void *userdata)
             
             points.x = temp_data.x;
             points.y = temp_data.y;
-            points.z = temp_data.z;
-        
+            if (temp_data.z != 0.0f) {
+                points.z = temp_data.z;
+                 // std::cout<<"POINTS: "<<points.x<<","<<points.y<<","<<points.z<<std::endl;
+                delta_calculator.calculate_object_position(&delta_calculator.object_position, &points);
+                selected_points.push_back(delta_calculator.object_position); // Store the selected point
+                std::cout << "Total selected points: " << selected_points.size() << std::endl;
+            }
+            else{
+                std::cout<<"Depth data is zero at this pixel. Skipping position calculation."<<std::endl;
+            }
            
-            // std::cout<<"POINTS: "<<points.x<<","<<points.y<<","<<points.z<<std::endl;
-            delta_calculator.calculate_object_position(&delta_calculator.object_position, &points);
-            selected_points.push_back(delta_calculator.object_position); // Store the selected point
-            std::cout << "Total selected points: " << selected_points.size() << std::endl;
             // final_solutions = delta_calculator.get_possible_sliders(&delta_calculator.object_position);
             // cudaDeviceSynchronize();
             // // std::cout << "Left button of mouse is clicked - position (" << x << ", " << y << ") in window " << data->windowName << std::endl;
@@ -210,6 +214,7 @@ int main(int argc, char *argv[])
     //delta_calculator.cuda_information();
     rs2::context ctx; // Create librealsense context for managing devices
     std::cout << "Process Started" << std::endl;
+    std::cout <<"Press 'C' to clear selected points, 'S' to compute solutions and select random slider positions."<<std::endl;
 
     std::map<std::string, rs2::colorizer> colorizers; // Declare map from device serial number to colorizer (utility class to convert depth data RGB colorspace)
 
@@ -370,3 +375,5 @@ int main(int argc, char *argv[])
 
     return EXIT_SUCCESS;
 }
+
+
