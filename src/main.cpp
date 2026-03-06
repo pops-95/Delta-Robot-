@@ -209,6 +209,7 @@ int main(int argc, char *argv[])
     // window app(1280, 960, "CPP Multi-Camera Example");
     //delta_calculator.cuda_information();
     rs2::context ctx; // Create librealsense context for managing devices
+    std::cout << "Process Started" << std::endl;
 
     std::map<std::string, rs2::colorizer> colorizers; // Declare map from device serial number to colorizer (utility class to convert depth data RGB colorspace)
 
