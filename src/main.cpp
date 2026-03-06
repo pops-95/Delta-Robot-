@@ -28,6 +28,138 @@ Camera_Point points;
 cv::Point3f temp_data;
 DeltaCalculation delta_calculator;
 std::vector<ValidPosition> final_solutions;
+std::vector<Position> selected_points; // Store selected points for later use
+std::vector<std::vector<ValidPosition>>all_solutions;
+
+struct Range { float start; float end; bool isValid; };
+
+// A simple struct to hold just the X/Y coordinates
+struct SliderCoordinate {
+    float slider_x;
+    float slider_y;
+};
+
+// The final result structure containing the chosen index and its corresponding coordinates
+struct RandomSelectionResult {
+    int chosen_idx;
+    std::vector<SliderCoordinate> coordinates;
+    bool success;
+};
+
+RandomSelectionResult get_random_slider_points(
+    const std::vector<std::vector<ValidPosition>>& all_solutions, 
+    const Range& common_range) 
+{
+    RandomSelectionResult result;
+    result.success = false;
+
+    // 1. Validate the range
+    if (!common_range.isValid || all_solutions.empty()) {
+        std::cerr << "Invalid range or empty datasets provided." << std::endl;
+        return result;
+    }
+
+    // Convert the float range back to integers since they represent thread indices
+    int min_idx = static_cast<int>(common_range.start);
+    int max_idx = static_cast<int>(common_range.end);
+
+    if (min_idx > max_idx) {
+        std::cerr << "Error: min_idx is greater than max_idx." << std::endl;
+        return result;
+    }
+
+    // 2. Setup the Random Number Generator
+    std::random_device rd;  // Obtain a random number from hardware
+    std::mt19937 gen(rd()); // Seed the standard Mersenne Twister engine
+    std::uniform_int_distribution<> distrib(min_idx, max_idx);
+
+    // Pick our random original_idx
+    result.chosen_idx = distrib(gen);
+    // std::cout << "Randomly selected original_idx: " << result.chosen_idx << std::endl;
+
+    // 3. Search each dataset for the chosen index
+    for (size_t i = 0; i < all_solutions.size(); ++i) {
+        const auto& dataset = all_solutions[i];
+        bool found = false;
+
+        for (const auto& pos : dataset) {
+            // Because original_idx is a float, we use a small epsilon (0.1f) for safe comparison, 
+            // even though it was originally cast from an integer.
+            if (std::abs(pos.original_idx - static_cast<float>(result.chosen_idx)) < 0.1f) {
+                result.coordinates.push_back({pos.slider_x, pos.slider_y});
+                found = true;
+                break; // Stop searching this dataset once we found the match
+            }
+        }
+
+        if (!found) {
+            std::cerr << "Warning: Index " << result.chosen_idx << " was not found in dataset " << i 
+                      << "! (This shouldn't happen if the common range is calculated correctly)." << std::endl;
+        }
+    }
+
+    result.success = true;
+    return result;
+}
+
+Range find_common_idx_range(const std::vector<std::vector<ValidPosition>>& all_solutions) {
+    // If we didn't process any datasets, return invalid
+    if (all_solutions.empty()) {
+        std::cerr << "No datasets provided to find_common_idx_range." << std::endl;
+        return {0.0f, 0.0f, false};
+    }
+
+    // Initialize our "common" range to extremely wide values.
+    // As we process each dataset, this window will shrink.
+    float common_start = -999999.0f; 
+    float common_end   = 999999.0f;  
+
+    // Loop through the separate results for each dataset
+    for (size_t i = 0; i < all_solutions.size(); ++i) {
+        const std::vector<ValidPosition>& current_dataset = all_solutions[i];
+        
+        // If ANY dataset has 0 valid positions, it's impossible to have a common overlap
+        if (current_dataset.empty()) {
+            return {0.0f, 0.0f, false};
+        }
+
+        // 1. Find the min and max original_idx for THIS specific dataset
+        float min_idx = current_dataset[0].original_idx;
+        float max_idx = current_dataset[0].original_idx;
+
+        for (const auto& pos : current_dataset) {
+            if (pos.original_idx < min_idx) min_idx = pos.original_idx;
+            if (pos.original_idx > max_idx) max_idx = pos.original_idx;
+        }
+
+        // 2. Shrink our common overlapping window
+        // The new common start is the MAXIMUM of the current starts
+        // The new common end is the MINIMUM of the current ends
+        if (common_start == -999999.0f) {
+            common_start = min_idx;
+            common_end = max_idx;
+        } else {
+            common_start = std::max(common_start, min_idx);
+            common_end   = std::min(common_end, max_idx);
+        }
+    }
+
+    // 3. Final Check: Does a valid overlap actually exist?
+    Range final_overlap;
+    if (common_start <= common_end) {
+        final_overlap.start = common_start;
+        final_overlap.end = common_end;
+        final_overlap.isValid = true;
+    } else {
+        final_overlap.start = 0.0f;
+        final_overlap.end = 0.0f;
+        final_overlap.isValid = false;
+    }
+    std::cout << "Calculated common index range: [" << common_start << ", " << common_end << "]" 
+              << " - Valid Overlap: " << (final_overlap.isValid ? "Yes" : "No") << std::endl;
+
+    return final_overlap;
+}
 
 static void onMouse(int event, int x, int y, int flags, void *userdata)
 {
@@ -42,21 +174,25 @@ static void onMouse(int event, int x, int y, int flags, void *userdata)
             points.x = temp_data.x;
             points.y = temp_data.y;
             points.z = temp_data.z;
+        
+           
             // std::cout<<"POINTS: "<<points.x<<","<<points.y<<","<<points.z<<std::endl;
             delta_calculator.calculate_object_position(&delta_calculator.object_position, &points);
-            final_solutions = delta_calculator.get_possible_sliders(&delta_calculator.object_position);
-            cudaDeviceSynchronize();
-            // std::cout << "Left button of mouse is clicked - position (" << x << ", " << y << ") in window " << data->windowName << std::endl;
-            // std::cout << std::fixed << std::setprecision(2) << "Position at this pixel: "<<x << "," <<y <<" is " << data->opened_cam->pixel_to_global(x, y, data->opened_cam->depth_frame->get_distance(x, y)*1000, data->opened_cam->get_color_intrinsics(data->opened_cam->get_pipeline())) << std::endl;
-            // std::cout << std::fixed << std::setprecision(2) << "Position at this pixel: "<<x << "," <<y <<" is " << points.x<<","<<points.y<<","<<points.z<<std::endl;
-            std::cout << std::fixed << std::setprecision(2) << "Object position: " << delta_calculator.object_position.x<<","<<delta_calculator.object_position.y<<std::endl;
-            std::cout << "Found " << final_solutions.size() << " possible slider positions." << std::endl;
-            // std::cout<< std::fixed << std::setprecision(2) << "Possible slider positions (x, y):" << std::endl;
-            // 3. Define the distribution range (inclusive)
-            std::uniform_int_distribution<int> distrib(0, final_solutions.size()-1);
-             // 4. Generate the number
-            int random_number = distrib(gen);
-            std::cout << "Randomly selected slider position: (" << final_solutions[random_number].slider_x << ", " << final_solutions[random_number].slider_y << ")" <<"At location " <<final_solutions[random_number].original_idx << std::endl;
+            selected_points.push_back(delta_calculator.object_position); // Store the selected point
+            std::cout << "Total selected points: " << selected_points.size() << std::endl;
+            // final_solutions = delta_calculator.get_possible_sliders(&delta_calculator.object_position);
+            // cudaDeviceSynchronize();
+            // // std::cout << "Left button of mouse is clicked - position (" << x << ", " << y << ") in window " << data->windowName << std::endl;
+            // // std::cout << std::fixed << std::setprecision(2) << "Position at this pixel: "<<x << "," <<y <<" is " << data->opened_cam->pixel_to_global(x, y, data->opened_cam->depth_frame->get_distance(x, y)*1000, data->opened_cam->get_color_intrinsics(data->opened_cam->get_pipeline())) << std::endl;
+            // // std::cout << std::fixed << std::setprecision(2) << "Position at this pixel: "<<x << "," <<y <<" is " << points.x<<","<<points.y<<","<<points.z<<std::endl;
+            // std::cout << std::fixed << std::setprecision(2) << "Object position: " << delta_calculator.object_position.x<<","<<delta_calculator.object_position.y<<std::endl;
+            // std::cout << "Found " << final_solutions.size() << " possible slider positions." << std::endl;
+            // // std::cout<< std::fixed << std::setprecision(2) << "Possible slider positions (x, y):" << std::endl;
+            // // 3. Define the distribution range (inclusive)
+            // std::uniform_int_distribution<int> distrib(0, final_solutions.size());
+            //  // 4. Generate the number
+            // int random_number = distrib(gen);
+            // std::cout << "Randomly selected slider position: (" << final_solutions[random_number].slider_x << ", " << final_solutions[random_number].slider_y << ")" <<"At location " <<final_solutions[random_number].original_idx << std::endl;
             
         }
         if (data->id == 2)
@@ -187,11 +323,48 @@ int main(int argc, char *argv[])
                 cv::imshow("Camera 2 - RGB", frames_vec[1].color_image);
         }
 
+
+        char key = (char)cv::waitKey(1);
         // Update every frame, press ESC to exit
-        if (cv::waitKey(1) == 27)
+        if (key == 27)
         {
             break;
         }
+
+        else if (key == 'c' || key == 'C')
+        {
+            // Clear selected points and solutions
+            if(!selected_points.empty()){
+                selected_points.pop_back();
+                std::cout << "Last selected point removed. Remaining points: " << selected_points.size() << std::endl;
+            }
+        }
+
+        else if(key== 's' || key == 'S')
+        {
+           all_solutions=delta_calculator.get_multiple_possible_sliders(selected_points);
+            Range common_range = find_common_idx_range(all_solutions);
+            if(common_range.isValid) {
+                std::cout << "Common index range across all datasets: [" << common_range.start << ", " << common_range.end << "]" << std::endl;
+                RandomSelectionResult random_result = get_random_slider_points(all_solutions, common_range);
+                if(random_result.success) {
+                    std::cout << "Randomly selected original_idx: " << random_result.chosen_idx << std::endl;
+                    for(size_t i = 0; i < random_result.coordinates.size(); ++i) {
+                        std::cout << "Dataset " << i << " - Slider Coordinates: (" 
+                                  << random_result.coordinates[i].slider_x << ", " 
+                                  << random_result.coordinates[i].slider_y << ")" << std::endl;
+                    }
+                selected_points.clear(); // Clear selected points after processing
+                } else {
+                    std::cerr << "Failed to select random slider points." << std::endl;
+                }
+            } else {
+                std::cerr << "No common index range found across datasets. Cannot select random slider points." << std::endl;
+            }
+        }
+
+
+
     }
 
     return EXIT_SUCCESS;

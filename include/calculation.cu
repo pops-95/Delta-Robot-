@@ -199,3 +199,101 @@ std::vector<ValidPosition> DeltaCalculation::get_possible_sliders(Position* host
     // Return the perfectly sized dynamic vector back to your main program
     return final_solutions;
 }
+
+
+// Add this declaration to your calculation.cuh header:
+// std::vector<std::vector<ValidPosition>> get_multiple_possible_sliders(const std::vector<Position>& host_object_positions);
+
+std::vector<std::vector<ValidPosition>> DeltaCalculation::get_multiple_possible_sliders(const std::vector<Position>& host_object_positions) {
+    
+    int num_datasets = host_object_positions.size();
+    if (num_datasets == 0) return {};
+
+    int max_solutions = 600; 
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (max_solutions + threadsPerBlock - 1) / threadsPerBlock;
+
+    // 1. ALLOCATE VECTORS TO HOLD POINTERS AND STREAMS
+    std::vector<cudaStream_t> streams(num_datasets);
+    std::vector<ValidPosition*> d_possible_positions(num_datasets);
+    std::vector<int*> d_counts(num_datasets);
+    std::vector<Position*> d_object_positions(num_datasets);
+    
+    // We use pinned host memory (cudaMallocHost) for the counts. 
+    // This is strictly required for asynchronous Device-to-Host copies to work efficiently.
+    int* h_counts;
+    CUDA_CHECK(cudaMallocHost(&h_counts, num_datasets * sizeof(int)));
+
+    // 2. INITIALIZE STREAMS AND DEVICE MEMORY
+    for (int i = 0; i < num_datasets; ++i) {
+        CUDA_CHECK(cudaStreamCreate(&streams[i]));
+        
+        CUDA_CHECK(cudaMalloc(&d_possible_positions[i], max_solutions * sizeof(ValidPosition)));
+        
+        CUDA_CHECK(cudaMalloc(&d_counts[i], sizeof(int)));
+        // Note: Using cudaMemsetAsync to zero out the counter within the specific stream
+        CUDA_CHECK(cudaMemsetAsync(d_counts[i], 0, sizeof(int), streams[i])); 
+        
+        CUDA_CHECK(cudaMalloc(&d_object_positions[i], sizeof(Position)));
+    }
+
+    // 3. PHASE 1: ASYNC MEMCPY (IN), KERNEL EXECUTION, ASYNC MEMCPY (OUT - COUNT ONLY)
+    for (int i = 0; i < num_datasets; ++i) {
+        // Copy the specific position to the device asynchronously
+        CUDA_CHECK(cudaMemcpyAsync(d_object_positions[i], &host_object_positions[i], sizeof(Position), cudaMemcpyHostToDevice, streams[i]));
+
+        // Launch kernel in the specific stream (Notice the 4th launch parameter: streams[i])
+        // Assumes delta_coefficients is already on device or accessible
+        possible_slider_pos<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(
+            delta_coefficients, 
+            d_object_positions[i], 
+            d_possible_positions[i], 
+            d_counts[i], 
+            max_solutions
+        );
+
+        // Copy the result count back to pinned host memory asynchronously
+        CUDA_CHECK(cudaMemcpyAsync(&h_counts[i], d_counts[i], sizeof(int), cudaMemcpyDeviceToHost, streams[i]));
+    }
+
+    // 4. SYNCHRONIZE DEVICE TO READ COUNTS
+    // We must wait for the counts to arrive before we know how much actual data to copy back.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // // --- ADD THIS DEBUG BLOCK ---
+    // for (int i = 0; i < num_datasets; ++i) {
+    //     std::cout << "Dataset " << i << " -> GPU found: " << h_counts[i] << " valid solutions." << std::endl;
+    // }
+    // //
+
+    // Prepare the final 2D vector for our results
+    std::vector<std::vector<ValidPosition>> final_all_solutions(num_datasets);
+
+    // 5. PHASE 2: ASYNC MEMCPY (OUT - ACTUAL DATA)
+    for (int i = 0; i < num_datasets; ++i) {
+        if (h_counts[i] > 0) {
+            final_all_solutions[i].resize(h_counts[i]);
+            
+            // Copy exactly the number of valid solutions found for this specific dataset
+            CUDA_CHECK(cudaMemcpyAsync(final_all_solutions[i].data(), 
+                                       d_possible_positions[i], 
+                                       h_counts[i] * sizeof(ValidPosition), 
+                                       cudaMemcpyDeviceToHost, 
+                                       streams[i]));
+        }
+    }
+
+    // 6. FINAL SYNCHRONIZATION AND CLEANUP
+    // Wait for all the data copies to finish before destroying streams and memory
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    for (int i = 0; i < num_datasets; ++i) {
+        CUDA_CHECK(cudaFree(d_possible_positions[i]));
+        CUDA_CHECK(cudaFree(d_counts[i]));
+        CUDA_CHECK(cudaFree(d_object_positions[i]));
+        CUDA_CHECK(cudaStreamDestroy(streams[i]));
+    }
+    CUDA_CHECK(cudaFreeHost(h_counts)); // Free the pinned memory
+
+    return final_all_solutions;
+}

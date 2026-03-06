@@ -36,6 +36,7 @@ class DeltaCalculation {
         Position object_position;
         void cuda_information();
         std::vector<ValidPosition> get_possible_sliders(Position* host_object_position);
+        std::vector<std::vector<ValidPosition>> get_multiple_possible_sliders(const std::vector<Position>& host_object_positions);
 
     private:
         Position current_position;
